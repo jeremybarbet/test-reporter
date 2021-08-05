@@ -1,14 +1,14 @@
-import {createWriteStream} from 'fs'
+import { createWriteStream } from 'fs'
 import * as core from '@actions/core'
 import * as github from '@actions/github'
-import {GitHub} from '@actions/github/lib/utils'
-import {EventPayloads} from '@octokit/webhooks'
+import { GitHub } from '@actions/github/lib/utils'
+import { EventPayloads } from '@octokit/webhooks'
 import * as stream from 'stream'
-import {promisify} from 'util'
+import { promisify } from 'util'
 import got from 'got'
 const asyncStream = promisify(stream.pipeline)
 
-export function getCheckRunContext(): {sha: string; runId: number} {
+export function getCheckRunContext(): { sha: string; runId: number } {
   if (github.context.eventName === 'workflow_run') {
     core.info('Action was triggered by workflow_run: using SHA and RUN_ID from triggering workflow')
     const event = github.context.payload as EventPayloads.WebhookPayloadWorkflowRun
@@ -25,10 +25,10 @@ export function getCheckRunContext(): {sha: string; runId: number} {
   if (github.context.payload.pull_request) {
     core.info(`Action was triggered by ${github.context.eventName}: using SHA from head of source branch`)
     const pr = github.context.payload.pull_request as EventPayloads.WebhookPayloadPullRequestPullRequest
-    return {sha: pr.head.sha, runId}
+    return { sha: pr.head.sha, runId }
   }
 
-  return {sha: github.context.sha, runId}
+  return { sha: github.context.sha, runId }
 }
 
 export async function downloadArtifact(
@@ -70,11 +70,11 @@ export async function downloadArtifact(
       throw new Error(`Location header has unexpected value: ${url}`)
     }
 
-    const downloadStream = got.stream(url, {headers})
+    const downloadStream = got.stream(url, { headers })
     const fileWriterStream = createWriteStream(fileName)
 
     core.info(`Downloading ${url}`)
-    downloadStream.on('downloadProgress', ({transferred}) => {
+    downloadStream.on('downloadProgress', ({ transferred }) => {
       core.info(`Progress: ${transferred} B`)
     })
     await asyncStream(downloadStream, fileWriterStream)
@@ -120,7 +120,7 @@ async function listGitTree(octokit: InstanceType<typeof GitHub>, sha: string, pa
     const file = `${path}${tr.path}`
     if (tr.type === 'blob') {
       result.push(file)
-    } else if (tr.type === 'tree' && truncated) {
+    } else if (tr.type === 'tree' && truncated && tr.sha) {
       const files = await listGitTree(octokit, tr.sha, `${file}/`)
       result.push(...files)
     }

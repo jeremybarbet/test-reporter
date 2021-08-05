@@ -42,6 +42,7 @@ class TestReporter {
   readonly workDirInput = core.getInput('working-directory', {required: false})
   readonly onlySummary = core.getInput('only-summary', {required: false}) === 'true'
   readonly token = core.getInput('token', {required: true})
+  readonly coverageJsonSummaryPath = core.getInput('coverage-json-summary-path', {required: false})
   readonly octokit: InstanceType<typeof GitHub>
   readonly context = getCheckRunContext()
 
@@ -116,6 +117,22 @@ class TestReporter {
       }
     }
 
+    if (this.coverageJsonSummaryPath) {
+      Object.entries(input).find(file => {
+        const [path, files] = file
+        console.log('-path', path)
+        console.log('-files', files)
+
+        if (this.coverageJsonSummaryPath === path) {
+          core.info('Coverage json summary file found')
+        }
+      })
+
+      core.startGroup('Creating coverage report')
+
+      core.endGroup()
+    }
+
     const isFailed = results.some(tr => tr.result === 'failed')
     const conclusion = isFailed ? 'failure' : 'success'
     const passed = results.reduce((sum, tr) => sum + tr.passed, 0)
@@ -168,6 +185,12 @@ class TestReporter {
     core.info('Creating report summary')
     const {listSuites, listTests, onlySummary} = this
     const baseUrl = createResp.data.html_url
+
+    if (baseUrl === null) {
+      core.error(`No baseUrl defined ${createResp}`)
+      return []
+    }
+
     const summary = getReport(results, {listSuites, listTests, baseUrl, onlySummary})
 
     core.info('Creating annotations')
@@ -194,6 +217,19 @@ class TestReporter {
     core.info(`Check run HTML: ${resp.data.html_url}`)
 
     return results
+  }
+
+  async createCoverageReport(name: string) {
+    const createResp = await this.octokit.checks.create({
+      head_sha: this.context.sha,
+      name,
+      status: 'in_progress',
+      output: {
+        title: name,
+        summary: ''
+      },
+      ...github.context.repo
+    })
   }
 
   getParser(reporter: string, options: ParseOptions): TestParser {
