@@ -71,6 +71,9 @@ inputs:
     description: GitHub Access Token
     required: false
     default: ${{ github.token }}
+  coverage-json-summary-path:
+    description: Path to the coverage JSON summary file
+    required: false
 outputs:
   conclusion:
     description: |
