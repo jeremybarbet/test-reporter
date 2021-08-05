@@ -1,24 +1,51 @@
 import * as core from '@actions/core'
 import * as github from '@actions/github'
-import {GitHub} from '@actions/github/lib/utils'
+import { GitHub } from '@actions/github/lib/utils'
 
-import {ArtifactProvider} from './input-providers/artifact-provider'
-import {LocalFileProvider} from './input-providers/local-file-provider'
-import {FileContent} from './input-providers/input-provider'
-import {ParseOptions, TestParser} from './test-parser'
-import {TestRunResult} from './test-results'
-import {getAnnotations} from './report/get-annotations'
-import {getReport} from './report/get-report'
+import { normalizeDirPath, normalizeFilePath } from './utils/path-utils'
+import { getCheckRunContext } from './utils/github-utils'
+import { Icon } from './utils/markdown-utils'
+import { ArtifactProvider } from './input-providers/artifact-provider'
+import { LocalFileProvider } from './input-providers/local-file-provider'
+import { FileContent } from './input-providers/input-provider'
+import { ParseOptions, TestParser } from './test-parser'
+import { TestRunResult } from './test-results'
+import { getAnnotations } from './report/get-annotations'
+import { getReport } from './report/get-report'
+import { getCoverage } from './report/get-coverage'
+import { DartJsonParser } from './parsers/dart-json/dart-json-parser'
+import { DotnetTrxParser } from './parsers/dotnet-trx/dotnet-trx-parser'
+import { JavaJunitParser } from './parsers/java-junit/java-junit-parser'
+import { JestJunitParser } from './parsers/jest-junit/jest-junit-parser'
+import { MochaJsonParser } from './parsers/mocha-json/mocha-json-parser'
 
-import {DartJsonParser} from './parsers/dart-json/dart-json-parser'
-import {DotnetTrxParser} from './parsers/dotnet-trx/dotnet-trx-parser'
-import {JavaJunitParser} from './parsers/java-junit/java-junit-parser'
-import {JestJunitParser} from './parsers/jest-junit/jest-junit-parser'
-import {MochaJsonParser} from './parsers/mocha-json/mocha-json-parser'
+interface JestCoverageResult {
+  total: number
+  covered: number
+  skipped: number
+  pct: number
+}
 
-import {normalizeDirPath, normalizeFilePath} from './utils/path-utils'
-import {getCheckRunContext} from './utils/github-utils'
-import {Icon} from './utils/markdown-utils'
+export interface JestCoverage {
+  statements: JestCoverageResult
+  branches: JestCoverageResult
+  functions: JestCoverageResult
+  lines: JestCoverageResult
+}
+
+interface CoverageRawJson {
+  total: JestCoverage
+  [key: string]: JestCoverage
+}
+
+export interface Coverage {
+  path: string;
+  total: JestCoverage;
+  files: {
+    path: string;
+    coverage: JestCoverage
+  }[];
+}
 
 async function main(): Promise<void> {
   try {
@@ -30,18 +57,19 @@ async function main(): Promise<void> {
 }
 
 class TestReporter {
-  readonly artifact = core.getInput('artifact', {required: false})
-  readonly name = core.getInput('name', {required: true})
-  readonly path = core.getInput('path', {required: true})
-  readonly pathReplaceBackslashes = core.getInput('path-replace-backslashes', {required: false}) === 'true'
-  readonly reporter = core.getInput('reporter', {required: true})
-  readonly listSuites = core.getInput('list-suites', {required: true}) as 'all' | 'failed'
-  readonly listTests = core.getInput('list-tests', {required: true}) as 'all' | 'failed' | 'none'
-  readonly maxAnnotations = parseInt(core.getInput('max-annotations', {required: true}))
-  readonly failOnError = core.getInput('fail-on-error', {required: true}) === 'true'
-  readonly workDirInput = core.getInput('working-directory', {required: false})
-  readonly onlySummary = core.getInput('only-summary', {required: false}) === 'true'
-  readonly token = core.getInput('token', {required: true})
+  readonly artifact = core.getInput('artifact', { required: false })
+  readonly name = core.getInput('name', { required: true })
+  readonly path = core.getInput('path', { required: true })
+  readonly pathReplaceBackslashes = core.getInput('path-replace-backslashes', { required: false }) === 'true'
+  readonly reporter = core.getInput('reporter', { required: true })
+  readonly listSuites = core.getInput('list-suites', { required: true }) as 'all' | 'failed'
+  readonly listTests = core.getInput('list-tests', { required: true }) as 'all' | 'failed' | 'none'
+  readonly maxAnnotations = parseInt(core.getInput('max-annotations', { required: true }))
+  readonly failOnError = core.getInput('fail-on-error', { required: true }) === 'true'
+  readonly workDirInput = core.getInput('working-directory', { required: false })
+  readonly onlySummary = core.getInput('only-summary', { required: false }) === 'true'
+  readonly token = core.getInput('token', { required: true })
+  readonly coverageJsonSummaryPath = core.getInput('coverage-json-summary-path', { required: false })
   readonly octokit: InstanceType<typeof GitHub>
   readonly context = getCheckRunContext()
 
@@ -79,15 +107,30 @@ class TestReporter {
 
     const inputProvider = this.artifact
       ? new ArtifactProvider(
-          this.octokit,
-          this.artifact,
-          this.name,
-          pattern,
-          this.context.sha,
-          this.context.runId,
-          this.token
-        )
+        this.octokit,
+        this.artifact,
+        this.name,
+        pattern,
+        this.context.sha,
+        this.context.runId,
+        this.token
+      )
       : new LocalFileProvider(this.name, pattern)
+
+    const coverageName = 'Coverage report'
+
+    // Should be refactored to use the same artifact download logic
+    const inputCoverageProvider = this.artifact
+      ? new ArtifactProvider(
+        this.octokit,
+        this.artifact,
+        coverageName,
+        [this.coverageJsonSummaryPath],
+        this.context.sha,
+        this.context.runId,
+        this.token
+      )
+      : new LocalFileProvider(coverageName, [this.coverageJsonSummaryPath])
 
     const parseErrors = this.maxAnnotations > 0
     const trackedFiles = await inputProvider.listTrackedFiles()
@@ -108,11 +151,23 @@ class TestReporter {
     const input = await inputProvider.load()
     for (const [reportName, files] of Object.entries(input)) {
       try {
-        core.startGroup(`Creating test report ${reportName}`)
+        core.startGroup(`Creating ${reportName}`)
         const tr = await this.createReport(parser, reportName, files)
         results.push(...tr)
       } finally {
         core.endGroup()
+      }
+    }
+
+    const coverageInput = await inputCoverageProvider.load()
+    if (this.coverageJsonSummaryPath) {
+      for (const [coverageName, files] of Object.entries(coverageInput)) {
+        try {
+          core.startGroup(`Creating ${coverageName}`)
+          await this.createCoverageReport(coverageName, files)
+        } finally {
+          core.endGroup()
+        }
       }
     }
 
@@ -147,7 +202,7 @@ class TestReporter {
     }
 
     const results: TestRunResult[] = []
-    for (const {file, content} of files) {
+    for (const { file, content } of files) {
       core.info(`Processing test results from ${file}`)
       const tr = await parser.parse(file, content)
       results.push(tr)
@@ -166,9 +221,15 @@ class TestReporter {
     })
 
     core.info('Creating report summary')
-    const {listSuites, listTests, onlySummary} = this
+    const { listSuites, listTests, onlySummary } = this
     const baseUrl = createResp.data.html_url
-    const summary = getReport(results, {listSuites, listTests, baseUrl, onlySummary})
+
+    if (baseUrl === null) {
+      core.error(`No baseUrl defined ${createResp}`)
+      return []
+    }
+
+    const summary = getReport(results, { listSuites, listTests, baseUrl, onlySummary })
 
     core.info('Creating annotations')
     const annotations = getAnnotations(results, this.maxAnnotations)
@@ -194,6 +255,58 @@ class TestReporter {
     core.info(`Check run HTML: ${resp.data.html_url}`)
 
     return results
+  }
+
+  async createCoverageReport(name: string, files: FileContent[]): Promise<void> {
+    if (files.length === 0) {
+      core.warning(`No file matches path ${this.coverageJsonSummaryPath}`)
+      return
+    }
+
+    const results: Coverage[] = []
+
+    for (const { file, content } of files) {
+      const normalized = JSON.parse(content) as CoverageRawJson
+      const entries = Object.entries(normalized);
+      const [_, total] = entries.find(([key]) => key === 'total')!
+      const files = entries.filter(([key]) => key !== 'total')
+
+      results.push({
+        path: file,
+        total,
+        files: files.map(([path, coverage]) => ({
+          path,
+          coverage,
+        })),
+      })
+    }
+
+    const createResp = await this.octokit.checks.create({
+      head_sha: this.context.sha,
+      name,
+      status: 'in_progress',
+      output: {
+        title: name,
+        summary: ''
+      },
+      ...github.context.repo
+    })
+
+    const summary = getCoverage(results)
+
+    const resp = await this.octokit.checks.update({
+      check_run_id: createResp.data.id,
+      conclusion: 'success',
+      status: 'completed',
+      output: {
+        title: `${name} ⚡️`,
+        summary,
+      },
+      ...github.context.repo
+    })
+
+    core.info(`Check run create response: ${resp.status}`)
+    core.info(`Check run HTML: ${resp.data.html_url}`)
   }
 
   getParser(reporter: string, options: ParseOptions): TestParser {

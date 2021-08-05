@@ -162,6 +162,9 @@ jobs:
     # Personal access token used to interact with Github API
     # Default: ${{ github.token }}
     token: ''
+
+    # Path to the coverage JSON summary file
+    coverage-json-summary-path: ''
 ```
 
 ## Output parameters

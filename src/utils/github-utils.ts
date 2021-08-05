@@ -120,7 +120,7 @@ async function listGitTree(octokit: InstanceType<typeof GitHub>, sha: string, pa
     const file = `${path}${tr.path}`
     if (tr.type === 'blob') {
       result.push(file)
-    } else if (tr.type === 'tree' && truncated) {
+    } else if (tr.type === 'tree' && truncated && tr.sha) {
       const files = await listGitTree(octokit, tr.sha, `${file}/`)
       result.push(...files)
     }
